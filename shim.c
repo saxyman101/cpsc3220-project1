@@ -1,11 +1,4 @@
 #define _GNU_SOURCE
-/*
-void __attribute__ ((constructor)) free_init(void);
-void __attribute__ ((destructor)) free_cleanup(void);
-
-void __attribute__ ((constructor)) malloc_init(void);
-void __attribute__ ((destructor)) malloc_cleanup(void);
-*/
 
 void __attribute__ ((constructor)) init(void);
 void __attribute__ ((destructor)) cleanup(void);
@@ -14,11 +7,15 @@ void __attribute__ ((destructor)) cleanup(void);
 #include <stdlib.h>
 #include <dlfcn.h>
 
+struct node_t {
+	void* ptr;
+	int size;
+	struct node_t* next;
+	struct node_t* prev;
+};
 
-FILE *fp;
-int x;
-const int SIZE = 1000;
-void* ptrs[SIZE];
+struct node_t* head;
+struct node_t* tail;
 
 void (*original_free)(void *ptr) = NULL;
 void* (*original_malloc)(size_t size);
@@ -26,41 +23,63 @@ void* (*original_malloc)(size_t size);
 void init() {
 	original_free = dlsym(RTLD_NEXT, "free");
 	original_malloc = dlsym(RTLD_NEXT, "malloc");
-	fp = fopen("leakcount.txt", "w");
 	
-
-	for (unsigned int i = 0; i<SIZE; i++)
-		ptrs[i] = NULL;
+	head = original_malloc(sizeof(struct node_t));
+	tail = original_malloc(sizeof(struct node_t));
+	
+	head->ptr = NULL;
+	head->size = 0;
+	head->prev = NULL;
+	head->next = tail;
+	
+	tail->ptr = NULL;
+	tail->size = 0;
+	tail->prev = head;
+	tail->next = NULL;
 }
 
 void cleanup() {
-	fclose(fp);
+printf("CLEANUP\n");
+	struct node_t* nodePtr = head->next;
+	int sum = 0;
+	int count = 0;
+	
+	while (nodePtr->next != NULL) {
+		sum += nodePtr->size;
+		count++;
+		fprintf(stderr, "LEAK\t%d\n", nodePtr->size);
+		nodePtr = nodePtr->next;
+	}
+	
+	fprintf(stderr,"TOTAL\t%d\t%d\n", count, sum);
 }
 
 void free(void *ptr) {
-	int i=0;
-	int done=0;
-	while (ptrs[i] != NULL && !done) {
-		if (ptrs[i] == ptr)
-			done = 1;
-		i++;	
-	}
-	i--;
+	struct node_t* nodePtr = head->next;
+	int exit = 0;
 	
-	if (fp != NULL)
-		if (i >= 0)
-		fprintf(fp,"-%d ", i);
+	while (nodePtr->next != NULL && exit == 0) {
+		if (nodePtr->ptr == ptr) {
+			nodePtr->prev->next = nodePtr->next;
+			nodePtr->next->prev = nodePtr->prev;
+			original_free(nodePtr);
+			exit = 1;
+		}	
+		nodePtr = nodePtr->next;
+	}
 	original_free(ptr);
 }
 
 void* malloc(size_t size) {
 	void* ptr = original_malloc(size);
 	
-	if (fp != NULL) {
-		ptrs[x] = ptr;
-		fprintf(fp,"%d ",(int)size);
-		x++;
-	}
+	struct node_t* node = original_malloc(sizeof(struct node_t));
+	node->size = (int)size;
+	node->ptr = ptr;
 	
+	node->prev = tail->prev;
+	node->next = tail;
+	tail->prev->next = node;
+	tail->prev = node;
 	return ptr;
 }
